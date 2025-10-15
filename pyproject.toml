@@ -4,20 +4,20 @@ build-backend = "hatchling.build"
 
 [project]
 name = "akr-monitor"
-version = "0.1.0"
+version = "0.1.1"
 description = "Real-time AKR Packet Monitor GUI"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [
-  { name = "AKR Team" }
+  { name = "RRCL, VM" }
 ]
 keywords = ["AKR", "serial", "GUI", "PyQt6", "pyqtgraph", "monitor"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
-  "Environment :: X11 Applications :: Qt",
+	"Environment :: Console",
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering :: Visualization",
 ]
