@@ -22,67 +22,81 @@ Tip: Some USB adapters (CH340/CP210x/FTDI) may need drivers. If the port doesn�
 
 提示：某些 USB 转串口芯片（如 CH340/CP210x/FTDI）可能需要驱动。如果找不到串口，请安装对应芯片的驱动后重试。
 
-## Quick install (recommended) 快速安装（推荐）
+## Recommended: Use a virtual environment（最推荐：使用虚拟环境）
 
-This method installs a desktop command called akr so you can start the app with one word.
+This is the simplest and most reliable way for new users. It keeps everything self‑contained and avoids PATH problems. After setup, you’ll start the app with a single command: akr.
 
-该方法会安装一个名为 akr 的桌面命令，输入一个词就能启动应用。
+这是对新手最简单、最稳妥的方法。它把环境与系统隔离，避免 PATH 问题。配置完成后，只需输入 akr 即可启动应用。
 
-1) Install Python 1）安装 Python
+### Windows (PowerShell / CMD)
 
-- macOS: Download and install “Python 3.12” from the official website (python.org). After installing, reopen Terminal.
+1) Install Python 3.10+ from python.org. During setup, check “Add python.exe to PATH”.
 
-- macOS：前往 python.org 下载并安装 “Python 3.12”。安装完成后，重新打开“终端”。
+2) In the AKR_Monitor folder, create and activate a virtual environment:
 
-- Windows: Download “Python 3.12 (64-bit)” from python.org and check “Add python.exe to PATH” during setup.
+```powershell
+py -m venv .venv
+.venv\Scripts\activate
+```
 
-- Windows：前往 python.org 下载并安装 “Python 3.12 (64-bit)”，安装时勾选“Add python.exe to PATH”。
+3) Upgrade pip and install the app into this venv:
 
-2) Open a Terminal/Command Prompt and run 2）打开终端/命令提示符并运行
+```powershell
+python -m pip install --upgrade pip
+pip install "git+https://github.com/o0fung/AKR_Monitor.git#egg=akr-monitor"
+```
+
+4) Start the app (venv must be active):
+
+```powershell
+akr
+```
+
+Next time you want to use it, just activate and run:
+
+```powershell
+.venv\Scripts\activate
+akr
+```
+
+### macOS (Terminal)
+
+1) Install Python 3.10+ (e.g., from python.org). Reopen Terminal after installing.
+
+2) In the AKR_Monitor folder, create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3) Upgrade pip and install the app into this venv:
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install "git+https://github.com/o0fung/AKR_Monitor.git#egg=akr-monitor"
+pip install "git+https://github.com/o0fung/AKR_Monitor.git#egg=akr-monitor"
 ```
 
-These commands download and install the app and all required libraries. After that, the akr command will be available.
-
-以上命令会下载并安装应用及其所需库。安装完成后，可使用 akr 命令启动应用。
-
-3) Start the app 3）启动应用
+4) Start the app (venv must be active):
 
 ```bash
 akr
 ```
 
-If the window doesn’t appear, see Troubleshooting below.
-
-如果窗口没有出现，请查看文末“故障排查”。
-
-## Run from source (no install) 源码运行（无需安装）
-
-If you prefer not to install, you can run directly from the downloaded folder.
-
-如果不想安装，也可以直接在下载的项目文件夹中运行。
+Next time you want to use it, just activate and run:
 
 ```bash
-# 1) Download or clone the repository and open Terminal inside the folder
-# 1）下载或克隆项目，并在该文件夹中打开终端
-
-# 2) Create and activate a virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate  # Windows use: .venv\Scripts\activate
-
-# 3) Install dependencies
-pip install -r requirements.txt
-
-# 4) Start the GUI
-python -m packet_monitor.gui
+source .venv/bin/activate
+akr
 ```
 
-The GUI should open. You can also run python -m packet_monitor to use package’s module entry.
+If akr doesn’t start for any reason, you can always use the module form inside the same venv:
 
-界面应会打开。也可以运行 python -m packet_monitor 使用包的模块入口。
+如果 akr 无法启动，也可在同一虚拟环境中使用模块方式：
+
+```bash
+python -m packet_monitor.gui
+```
 
 ## First-time use 第一次使用
 
@@ -122,19 +136,23 @@ Shortcuts: Space = Record on/off · Backspace = Pause chart · Enter = Connect �
 
 - 日志保存在应用同级目录的 packet_monitor/logs/ 下。可用 Excel 或 Numbers 打开 CSV。
 
-## Uninstall 卸载
+## Upgrade and uninstall within venv 升级与卸载（在虚拟环境中）
 
-If you installed with the quick method:
+Make sure your venv is active first.
 
-若使用“快速安装”方式安装：
+请先确保虚拟环境已被激活。
+
+Upgrade 升级：
 
 ```bash
-python -m pip uninstall akr-monitor
+pip install --upgrade akr-monitor
 ```
 
-This removes the akr command from your system.
+Uninstall 卸载：
 
-以上命令会从系统中移除 akr 启动命令。
+```bash
+pip uninstall akr-monitor
+```
 
 ## Troubleshooting 故障排查
 
@@ -162,17 +180,21 @@ This removes the akr command from your system.
 
 - 运行 akr 后没有弹出窗口：
 
-	- Upgrade pip and reinstall: python -m pip install --upgrade pip setuptools wheel, then reinstall the app.
+	- Ensure your venv is activated, then run python -m packet_monitor.gui to check for errors.
 
-	- 升级 pip 后重装：python -m pip install --upgrade pip setuptools wheel，然后重新安装本应用。
+	- 确认已激活虚拟环境，然后运行 python -m packet_monitor.gui 查看报错信息。
 
-	- Ensure your Python is version 3.10 or newer. Older versions can’t install some libraries.
+	- Upgrade pip and reinstall inside the venv: python -m pip install --upgrade pip, then pip install -U akr-monitor.
 
-	- 确认 Python 版本 ≥ 3.10。过旧版本无法安装部分库。
+	- 在虚拟环境内升级 pip 并重装：先 python -m pip install --upgrade pip，再 pip install -U akr-monitor。
 
 - No data/flat charts after connecting.
 
 - 连接后没有数据或图表不动：
+
+Tip: Using a venv avoids most PATH issues. If “akr not found”, make sure the venv is active (you should see (.venv) at the prompt), or use python -m packet_monitor.gui.
+
+提示：使用虚拟环境几乎可避免 PATH 问题。若提示“找不到 akr”，请确认已激活虚拟环境（命令行前有 (.venv)），或使用 python -m packet_monitor.gui。
 
 	- Check that Baud matches your firmware (default 115200). Verify the selected Port is correct.
 
@@ -180,9 +202,9 @@ This removes the akr command from your system.
 
 ## For advanced users 进阶说明
 
-- Command line entry point: akr (installed via pip). GUI module entry: packet_monitor.gui:main
+- Command line entry point (within venv): akr. Module entry: packet_monitor.gui:main
 
-- 命令行入口：akr（通过 pip 安装后可用）。GUI 模块入口：packet_monitor.gui:main
+- 命令行入口（在虚拟环境内）：akr。模块入口：packet_monitor.gui:main
 
 - Default baud rate is 115200 (see packet_monitor/cli.py). You can change it in the app before connecting.
 
