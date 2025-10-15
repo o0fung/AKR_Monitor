@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "akr-monitor"
+version = "0.1.0"
+description = "Real-time AKR Packet Monitor GUI"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [
+  { name = "AKR Team" }
+]
+keywords = ["AKR", "serial", "GUI", "PyQt6", "pyqtgraph", "monitor"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Visualization",
+]
+# Runtime dependencies for the GUI
+dependencies = [
+  "PyQt6>=6.5",
+  "pyqtgraph>=0.13",
+  "pyserial>=3.5",
+  "numpy>=1.24",
+  "rich>=13.0",
+]
+
+# Create a cross-platform launcher named `akr`
+# On Windows this will be a GUI app (no console window)
+[project.gui-scripts]
+akr = "packet_monitor.gui:main"
+
+[project.urls]
+Homepage = "https://github.com/o0fung/AKR_Monitor"
+Issues = "https://github.com/o0fung/AKR_Monitor/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["packet_monitor"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "packet_monitor",
+  "README.md",
+  "LICENSE",
+]
