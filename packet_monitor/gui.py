@@ -1140,7 +1140,7 @@ class MonitorWindow(QMainWindow):
 
     def start_recording(self):
         try:
-            logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
+            logs_dir = os.path.expanduser(os.path.join('~', 'Desktop', 'logs'))
             os.makedirs(logs_dir, exist_ok=True)
             ts_name = time.strftime('%Y%m%d_%H%M%S')
             fname = os.path.join(logs_dir, f'data_{ts_name}.csv')
