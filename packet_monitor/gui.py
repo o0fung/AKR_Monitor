@@ -173,44 +173,52 @@ class SerialWorker(QObject):
     def send_param_packet(self, param: Dict[str, int]):
         """Build and enqueue a parameter packet to be sent by the worker thread."""
         try:
-            # Bit fields per reference
-            temp1 = (
-                (param.get('WALK_MODE', 0) & 3)
-                | ((param.get('FLAG_EARLY_SWING', 0) & 1) << 2)
-                | ((param.get('FLAG_ENABLE_MOTOR', 0) & 1) << 3)
-                | ((param.get('FLAG_ENABLE_BUZZER', 0) & 1) << 4)
-                | ((param.get('CPM_MODE', 0) & 1) << 5)
-                | ((param.get('IS_LEFT', 0) & 1) << 6)
-            ) & 0xFF
-            temp2 = ((param.get('CPM_DF_DT', 0) & 15) | ((param.get('CPM_DF_WAIT', 0) & 15) << 4)) & 0xFF
-            temp3 = ((param.get('CPM_PF_DT', 0) & 15) | ((param.get('CPM_PF_WAIT', 0) & 15) << 4)) & 0xFF
-            temp4 = (
-                (param.get('RF_PAIR_BTN', 0) & 1)
-                | ((param.get('RF_PAIRING', 0) & 1) << 1)
-                | ((param.get('CALIBRATE', 0) & 1) << 2)
-                | ((param.get('CAL_PWM', 0) & 1) << 3)
-                | ((param.get('TRIGGER_DF', 0) & 1) << 4)
-                | ((param.get('TRIGGER_PF', 0) & 1) << 5)
-                | ((param.get('SHOW_SYSINFO', 0) & 1) << 6)
-                | ((param.get('FACTORY_RESET', 0) & 1) << 7)
+            # RX SET flags (byte0): WW (0..3), E, M, Z, C; bit6/7 ignored by firmware
+            rx_set = (
+                (param.get('WALK_MODE', 0) & 0x3)
+                | ((param.get('FLAG_EARLY_SWING', 0) & 0x1) << 2)
+                | ((param.get('FLAG_ENABLE_MOTOR', 0) & 0x1) << 3)
+                | ((param.get('FLAG_ENABLE_BUZZER', 0) & 0x1) << 4)
+                | ((param.get('CPM_MODE', 0) & 0x1) << 5)
             ) & 0xFF
 
-            SERVO_DF = param.get('SERVO_DF', 0) & 0xFF
-            SERVO_PF = param.get('SERVO_PF', 0) & 0xFF
-            CPM_RANGE_DF = param.get('CPM_RANGE_DF', 0) & 0xFF
-            CPM_RANGE_PF = param.get('CPM_RANGE_PF', 0) & 0xFF
-            CPM_DURATION = param.get('CPM_DURATION', 0) & 0xFF
+            # CPM timings (bytes1..2): lower nibble=dt, upper nibble=wait
+            cpm_df = ((param.get('CPM_DF_DT', 0) & 0xF) | ((param.get('CPM_DF_WAIT', 0) & 0xF) << 4)) & 0xFF
+            cpm_pf = ((param.get('CPM_PF_DT', 0) & 0xF) | ((param.get('CPM_PF_WAIT', 0) & 0xF) << 4)) & 0xFF
 
-            checksum = (~(temp1 + temp2 + temp3 + temp4 + SERVO_DF + SERVO_PF + CPM_RANGE_DF + CPM_RANGE_PF + CPM_DURATION)) & 0xFF
-            PARAM_SIZE = 10  # number of bytes after this length byte (incl. checksum)
+            # Targets, ranges, duration (bytes3..7)
+            df_target = param.get('SERVO_DF', 0) & 0xFF
+            pf_target = param.get('SERVO_PF', 0) & 0xFF
+            cpm_range_df = param.get('CPM_RANGE_DF', 0) & 0xFF
+            cpm_range_pf = param.get('CPM_RANGE_PF', 0) & 0xFF
+            cpm_duration_min = param.get('CPM_DURATION', 0) & 0xFF
 
-            # Assemble packet: 0xFF 0xFF, PARAM_SIZE, [payload...], checksum
-            payload = [temp1, temp2, temp3, SERVO_DF, SERVO_PF, CPM_RANGE_DF, CPM_RANGE_PF, CPM_DURATION, temp4, checksum]
+            # Command selection: use explicit CMD_ID (single command per frame) if provided
+            cmd_id = param.get('CMD_ID', None)
+            cmd_byte = 0x00 if cmd_id is None else (((int(cmd_id) & 0x7F) << 1) | 0x01)
+
+            # Build primary parameter payload (L=10)
+            payload = [
+                rx_set,
+                cpm_df,
+                cpm_pf,
+                df_target,
+                pf_target,
+                cpm_range_df,
+                cpm_range_pf,
+                cpm_duration_min,
+                cmd_byte,
+                0,  # checksum placeholder
+            ]
+            # Compute checksum over bytes 0..8
+            s = sum(payload[:-1]) & 0xFF
+            payload[-1] = (~s) & 0xFF
+
+            PARAM_SIZE = 10
             packet = [255, 255, PARAM_SIZE] + payload
-
-            out = b''.join(struct.pack('B', v & 0xFF) for v in packet)
-            # Enqueue for sending in worker loop
-            self._outbox.put((out, packet))
+            out_main = b''.join(struct.pack('B', v & 0xFF) for v in packet)
+            # Enqueue single frame only
+            self._outbox.put((out_main, packet))
         except Exception as e:
             self.connection_lost.emit(f"Send build failed: {e}")
 
@@ -545,7 +553,6 @@ class MonitorWindow(QMainWindow):
         self.in_enable_motor = QCheckBox(); self.in_enable_motor.setChecked(False)
         self.in_enable_buzzer = QCheckBox(); self.in_enable_buzzer.setChecked(False)
         self.in_cpm_mode = QCheckBox(); self.in_cpm_mode.setChecked(False)
-        self.in_is_left = QCheckBox(); self.in_is_left.setChecked(False)
 
         self.in_cpm_df_dt = make_spin(0, 15, 0)
         self.in_cpm_df_wait = make_spin(0, 15, 0)
@@ -558,21 +565,56 @@ class MonitorWindow(QMainWindow):
         self.in_cpm_range_pf = make_spin(0, 100, 50)
         self.in_cpm_duration = make_spin(0, 255, 0)
 
-        self.in_rf_pair_btn = QCheckBox()
-        self.in_rf_pairing = QCheckBox()
-        self.in_calibrate = QCheckBox()
-        self.in_cal_pwm = QCheckBox()
-        self.in_trigger_df = QCheckBox()
-        self.in_trigger_pf = QCheckBox()
-        self.in_factory_reset = QCheckBox()
-        self.in_show_sysinfo = QCheckBox()
+        # Command buttons group (single-command per send)
+        cmd_box = QGroupBox("Commands (single-action)")
+        cmd_layout = QGridLayout(cmd_box)
+        # Track all command buttons to enable only after 'Load From Packet'
+        self.command_buttons: List[QPushButton] = []
+        # Define helper to create buttons
+        def mk_cmd_btn(text: str, cmd_id: int):
+            btn = QPushButton(text)
+            def _send():
+                params = gather_params()
+                params['CMD_ID'] = cmd_id
+                if not self.worker:
+                    QMessageBox.information(self, "Connection", "Not connected.")
+                    return
+                self.worker.send_param_packet(params)
+                self.set_status(f"Command sent: {text} (id={cmd_id})")
+            btn.clicked.connect(_send)
+            btn.setEnabled(False)  # gated behind 'Load From Packet'
+            self.command_buttons.append(btn)
+            return btn
+        # Row 0
+        btn_rf_reset = mk_cmd_btn("RF Reset/Unpair", 0)
+        btn_rf_pair = mk_cmd_btn("RF Pair", 1)
+        btn_cal_feedback = mk_cmd_btn("Calibrate Feedback", 2)
+        btn_cal_pwm = mk_cmd_btn("Calibrate PWM", 6)
+        # Row 1
+        btn_move_df = mk_cmd_btn("Move to DF", 8)
+        btn_move_pf = mk_cmd_btn("Move to PF", 16)
+        btn_sysinfo = mk_cmd_btn("Show System Info", 32)
+        btn_factory = mk_cmd_btn("Factory Reset", 64)
+        # Row 2 (side set)
+        btn_set_right = mk_cmd_btn("Set Side RIGHT", 48)
+        btn_set_left = mk_cmd_btn("Set Side LEFT", 49)
+        # Layout as grid
+        cmd_layout.addWidget(btn_rf_reset, 0, 0)
+        cmd_layout.addWidget(btn_rf_pair, 0, 1)
+        cmd_layout.addWidget(btn_cal_feedback, 0, 2)
+        cmd_layout.addWidget(btn_cal_pwm, 0, 3)
+        cmd_layout.addWidget(btn_move_df, 1, 0)
+        cmd_layout.addWidget(btn_move_pf, 1, 1)
+        cmd_layout.addWidget(btn_sysinfo, 1, 2)
+        cmd_layout.addWidget(btn_factory, 1, 3)
+        cmd_layout.addWidget(btn_set_right, 2, 0)
+        cmd_layout.addWidget(btn_set_left, 2, 1)
 
         form.addRow("Walk Mode (0-3)", self.in_walk_mode)
         form.addRow("Early Swing", self.in_early_swing)
         form.addRow("Enable Motor", self.in_enable_motor)
         form.addRow("Enable Buzzer", self.in_enable_buzzer)
         form.addRow("CPM Mode", self.in_cpm_mode)
-        form.addRow("Is Left", self.in_is_left)
 
         form.addRow("CPM DF dt (0-15)", self.in_cpm_df_dt)
         form.addRow("CPM DF wait (0-15)", self.in_cpm_df_wait)
@@ -584,15 +626,8 @@ class MonitorWindow(QMainWindow):
         form.addRow("CPM Range DF %", self.in_cpm_range_df)
         form.addRow("CPM Range PF %", self.in_cpm_range_pf)
         form.addRow("CPM Duration (0-255)", self.in_cpm_duration)
-
-        form.addRow("RF Pair Btn", self.in_rf_pair_btn)
-        form.addRow("RF Pairing", self.in_rf_pairing)
-        form.addRow("Calibrate", self.in_calibrate)
-        form.addRow("Cal PWM", self.in_cal_pwm)
-        form.addRow("Trigger DF", self.in_trigger_df)
-        form.addRow("Trigger PF", self.in_trigger_pf)
-        form.addRow("Factory Reset", self.in_factory_reset)
-        form.addRow("Show System Info (once)", self.in_show_sysinfo)
+        # Add command buttons group
+        form.addRow(cmd_box)
 
         self.btn_send = QPushButton("Send Packet")
         self.btn_send.setEnabled(False)
@@ -609,7 +644,6 @@ class MonitorWindow(QMainWindow):
                 'FLAG_ENABLE_MOTOR': int(self.in_enable_motor.isChecked()),
                 'FLAG_ENABLE_BUZZER': int(self.in_enable_buzzer.isChecked()),
                 'CPM_MODE': int(self.in_cpm_mode.isChecked()),
-                'IS_LEFT': int(self.in_is_left.isChecked()),
                 'CPM_DF_DT': self.in_cpm_df_dt.value(),
                 'CPM_DF_WAIT': self.in_cpm_df_wait.value(),
                 'CPM_PF_DT': self.in_cpm_pf_dt.value(),
@@ -619,14 +653,6 @@ class MonitorWindow(QMainWindow):
                 'CPM_RANGE_DF': self.in_cpm_range_df.value(),
                 'CPM_RANGE_PF': self.in_cpm_range_pf.value(),
                 'CPM_DURATION': self.in_cpm_duration.value(),
-                'RF_PAIR_BTN': int(self.in_rf_pair_btn.isChecked()),
-                'RF_PAIRING': int(self.in_rf_pairing.isChecked()),
-                'CALIBRATE': int(self.in_calibrate.isChecked()),
-                'CAL_PWM': int(self.in_cal_pwm.isChecked()),
-                'TRIGGER_DF': int(self.in_trigger_df.isChecked()),
-                'TRIGGER_PF': int(self.in_trigger_pf.isChecked()),
-                'SHOW_SYSINFO': int(self.in_show_sysinfo.isChecked()),
-                'FACTORY_RESET': int(self.in_factory_reset.isChecked()),
             }
 
         def on_send():
@@ -634,12 +660,9 @@ class MonitorWindow(QMainWindow):
                 QMessageBox.information(self, "Connection", "Not connected.")
                 return
             params = gather_params()
-            # Direct call enqueues to worker's outbox; serial write happens on worker thread
+            # Send parameters only (no command). Commands use dedicated buttons.
             self.worker.send_param_packet(params)
-            # Auto-reset one-shot sysinfo toggle to avoid repeated triggers
-            if self.in_show_sysinfo.isChecked():
-                self.in_show_sysinfo.setChecked(False)
-            self.set_status("Send attempted")
+            self.set_status("Parameters sent (no command)")
 
         self.btn_send.clicked.connect(on_send)
 
@@ -652,7 +675,6 @@ class MonitorWindow(QMainWindow):
                 self.in_enable_motor.setChecked(bool(getattr(pkt, 'flag_enable_motor', self.in_enable_motor.isChecked())))
                 self.in_enable_buzzer.setChecked(bool(getattr(pkt, 'flag_enable_buzzer', self.in_enable_buzzer.isChecked())))
                 self.in_cpm_mode.setChecked(bool(getattr(pkt, 'cpm_mode', self.in_cpm_mode.isChecked())))
-                self.in_is_left.setChecked(bool(getattr(pkt, 'is_left', self.in_is_left.isChecked())))
 
                 self.in_cpm_df_dt.setValue(int(getattr(pkt, 'cpm_df_dt', self.in_cpm_df_dt.value())))
                 self.in_cpm_df_wait.setValue(int(getattr(pkt, 'cpm_df_wait', self.in_cpm_df_wait.value())))
@@ -666,14 +688,7 @@ class MonitorWindow(QMainWindow):
                 self.in_cpm_range_pf.setValue(int(getattr(pkt, 'cpm_range_pf', self.in_cpm_range_pf.value())))
                 self.in_cpm_duration.setValue(int(getattr(pkt, 'cpm_duration', self.in_cpm_duration.value())))
 
-                self.in_rf_pair_btn.setChecked(bool(getattr(pkt, 'rf_pair_btn', self.in_rf_pair_btn.isChecked())))
-                self.in_rf_pairing.setChecked(bool(getattr(pkt, 'rf_pairing', self.in_rf_pairing.isChecked())))
-                self.in_calibrate.setChecked(bool(getattr(pkt, 'calibrate', self.in_calibrate.isChecked())))
-                self.in_cal_pwm.setChecked(bool(getattr(pkt, 'cal_pwm', self.in_cal_pwm.isChecked())))
-                self.in_trigger_df.setChecked(bool(getattr(pkt, 'trigger_df', self.in_trigger_df.isChecked())))
-                self.in_trigger_pf.setChecked(bool(getattr(pkt, 'trigger_pf', self.in_trigger_pf.isChecked())))
-                self.in_factory_reset.setChecked(bool(getattr(pkt, 'factory_reset', self.in_factory_reset.isChecked())))
-                self.in_show_sysinfo.setChecked(False)
+                # No command checkboxes to sync; buttons are stateless
             except Exception:
                 pass
 
@@ -685,6 +700,12 @@ class MonitorWindow(QMainWindow):
             apply_from_pkt(pkt)
             self.set_status("Loaded control values from last packet")
             self.btn_send.setEnabled(True)
+            # Enable command buttons now that parameters reflect device state
+            try:
+                for b in getattr(self, 'command_buttons', []):
+                    b.setEnabled(True)
+            except Exception:
+                pass
 
         self.btn_load_from_packet.clicked.connect(on_load_from_packet)
 
@@ -694,6 +715,12 @@ class MonitorWindow(QMainWindow):
             if idx == getattr(self, 'ctrl_tab_index', -1):
                 self.btn_send.setEnabled(False)
                 self.set_status("Load from packet before sending")
+                # Also gate command buttons until user loads parameters
+                try:
+                    for b in getattr(self, 'command_buttons', []):
+                        b.setEnabled(False)
+                except Exception:
+                    pass
 
         self.tabs.currentChanged.connect(on_tab_changed)
 
@@ -753,6 +780,12 @@ class MonitorWindow(QMainWindow):
         self.worker = None
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
+        # Disable command buttons when disconnected
+        try:
+            for b in getattr(self, 'command_buttons', []):
+                b.setEnabled(False)
+        except Exception:
+            pass
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Return:

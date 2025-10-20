@@ -84,6 +84,12 @@ class Packet:
 
 
 def parse_packet(raw: bytes) -> Optional[Packet]:
+    """Parse a single 66-byte payload (including checksum) into a Packet.
+
+    This function also recognizes the new system-info frame format described in
+    PACKET_INFO.md by checking for ASCII tokens in the first two float slots
+    (bytes 0..7 == b"INFO VER").
+    """
     if len(raw) != DATA_SIZE:
         return None
     payload, checksum_byte = raw[:-1], raw[-1]
@@ -91,36 +97,46 @@ def parse_packet(raw: bytes) -> Optional[Packet]:
     expected = (~checksum) & 0xFF  # Complement checksum scheme
     if expected != checksum_byte:
         return None
+
+    # Check for system-info token prefix directly in bytes (more robust than count==0)
+    is_sysinfo = False
+    try:
+        if payload[0:8] == b"INFO VER":
+            is_sysinfo = True
+    except Exception:
+        is_sysinfo = False
+
     values = struct.unpack(FORMAT_PAYLOAD, payload)
     pkt = Packet(*values)
-    # Interpret system-info special payload when count==0
+
+    # Interpret system-info special payload
     try:
-        if int(pkt.count) == 0:
+        if is_sysinfo or int(getattr(pkt, 'count', 1)) == 0:
             pkt.is_sysinfo = True
-            # Interpret floats[0..13]
-            # values[0..13] are floats
             f = list(values[:FLOAT_COUNT])
-            # f[3] is version
-            pkt.sys_ver = float(f[3])
-            # f[4] 1.0 left, 0.0 right
+            # Per PACKET_INFO.md (system-info slots):
+            # 0: "INFO" (packed ASCII), 1: " VER", 2: firmware version,
+            # 3: "CFG ", 4: CONFIG_VERSION (ASCII packed), 5: "DATE",
+            # 6..9: date ASCII across 4 floats, 10: "TAG", 11: tag, 12: side (1.0 L / 0.0 R), 13: DF range
             try:
-                pkt.sys_is_left = 1 if float(f[4]) >= 0.5 else 0
+                pkt.sys_ver = float(f[2])
+            except Exception:
+                pkt.sys_ver = 0.0
+            try:
+                pkt.sys_is_left = 1 if float(f[12]) >= 0.5 else 0
             except Exception:
                 pkt.sys_is_left = None
-            # f[5] 30 or 15
             try:
-                pkt.sys_df_range = float(f[5])
+                pkt.sys_df_range = float(f[13])
             except Exception:
                 pkt.sys_df_range = None
             # f[6..9] contain FW_DATE as packed ASCII, 16 chars max
             date_bytes = b''
             for i in range(6, 10):
-                # pack float bytes directly
                 try:
                     date_bytes += struct.pack('<f', f[i])
                 except Exception:
                     pass
-            # Strip trailing nulls and non-printables
             pkt.sys_fw_date = ''.join(chr(b) for b in date_bytes if 32 <= b <= 126).strip() or None
     except Exception:
         pass
@@ -132,7 +148,12 @@ def format_packet(p: Packet, last_count: float) -> str:
         side = 'L' if getattr(p, 'sys_is_left', 1) else 'R'
         rng = getattr(p, 'sys_df_range', None)
         date = getattr(p, 'sys_fw_date', '') or ''
-        return f"SYSINFO v{int(getattr(p, 'sys_ver', 0))} {side} DF{int(rng) if rng else ''} {date}"
+        ver = getattr(p, 'sys_ver', 0)
+        try:
+            ver_txt = f"{ver:.0f}"
+        except Exception:
+            ver_txt = str(ver)
+        return f"SYSINFO v{ver_txt} {side} DF{int(rng) if rng else ''} {date}"
     n = p.count - last_count
     return (
         f"{p.count:7.0f}: {p.dt:6.0f} | {p.angle_forward:5.1f} {p.angle_abduction:5.1f} | "
