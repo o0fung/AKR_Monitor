@@ -82,6 +82,7 @@ Flag byte XLCZMEWW (offset 58):
 Notes
 - “dt” and “wait” are 4-bit values used by firmware timing logic for DF/PF movement segments.
 - Exact enumerations for “battery/servo/gait state” come from firmware modules; treat them as small integers unless you mirror the enums.
+- TX flags include current runtime side and DF15/30; RX flags do not control side (see below).
 
 
 ### Device → Host: System-Info Frame (also L = 66)
@@ -92,11 +93,11 @@ On startup (frame count == 0) or when explicitly requested (cmd 32), the device 
 |------|-------|---------------------------------|---------|
 | 0    | float | ASCII "INFO" (packed)           | "INFO" |
 | 1    | float | ASCII " VER" (packed)           | " VER" |
-| 2    | float | Firmware version                | 17.1 |
+| 2    | float | Firmware version                | 17.2 |
 | 3    | float | ASCII "CFG " (packed)           | "CFG " |
 | 4    | float | ASCII CONFIG_VERSION            | "v171" |
 | 5    | float | ASCII "DATE" (packed)           | "DATE" |
-| 6–9  | float | Firmware date ASCII (packed)    | "2025-10-16" across 4 floats |
+| 6–9  | float | Firmware date ASCII (packed)    | "2025-10-27" across 4 floats |
 | 10   | float | ASCII "TAG" (packed)            | "TAG" |
 | 11   | float | ASCII tag (packed)              | " L30" or " R15" |
 | 12   | float | Side as number                  | 1.0=LEFT, 0.0=RIGHT |
@@ -115,7 +116,7 @@ Parameter payload layout:
 
 | Byte | Name                   | Type  | Bits           | Meaning |
 |------|------------------------|-------|----------------|---------|
-| 0    | RX SET flags           | uint8 | C Z M E WW.    | Same bit layout as TX SET except X is reserved in RX |
+| 0    | RX SET flags           | uint8 | C Z M E WW.    | Same bit layout as TX SET except X/L are ignored in RX |
 | 1    | CPM DF timing          | uint8 | wait:4, dt:4   | lower=dt(0..15), upper=wait(0..15) |
 | 2    | CPM PF timing          | uint8 | wait:4, dt:4   | lower=dt(0..15), upper=wait(0..15) |
 | 3    | DF target (LOCK)       | uint8 | —              | 0..255 |
@@ -135,7 +136,7 @@ RX SET flags (byte 0):
 | 3    | M    | Motor enable |
 | 4    | Z    | Buzzer enable |
 | 5    | C    | CPM enable (applied only when motor disabled) |
-| 6    | —    | Ignored (use commands 48/49 to set side) |
+| 6    | L    | Ignored (use commands 48/49 to set side) |
 | 7    | —    | Ignored |
 
 Side control: The firmware no longer reads a “side” bit from RX flags. Use command 48 (RIGHT) or 49 (LEFT) to change side at runtime.
@@ -147,6 +148,7 @@ Command byte (byte 8):
 | 0   | RF reset/unpair (simulate long press) |
 | 1   | RF pair (simulate short press)        |
 | 2   | Calibrate servo position feedback     |
+| 3   | Calibrate RF remote controller        |
 | 6   | Calibrate servo PWM                   |
 | 8   | Trigger servo move to DF              |
 | 16  | Trigger servo move to PF              |
@@ -166,7 +168,7 @@ Notes on duration (byte 7):
 - Header byte: 0xFF
 - Telemetry payload length (DATA_SIZE): 66
 - Param payload length (PARAM_SIZE): 10
-- Firmware version/date: see `setup.h` (e.g., `VERSION`, `FW_DATE`)
+- Firmware version/date: see `setup.h` (e.g., `VERSION=17.2`, `FW_DATE=2025-10-27`, `CONFIG_VERSION="v172"`)
 
 
 ## Python examples
@@ -242,7 +244,7 @@ def parse_telemetry(payload: bytes):
 
 ### Build and send a parameter packet (host → device)
 
-Note: Side selection is performed using commands 48 (RIGHT) and 49 (LEFT). The firmware ignores any “side” bit in RX flags.
+Note: Side selection is performed using commands 48 (RIGHT) and 49 (LEFT). The firmware ignores any “side” bit in RX flags; do not rely on RX flags bit6 to change side.
 
 ```python
 import struct
@@ -259,7 +261,6 @@ def build_params(
 	motor_enable: bool,
 	buzzer_enable: bool,
 	cpm_enable: bool,
-	is_left: bool,
 	df_dt: int, df_wait: int,
 	pf_dt: int, pf_wait: int,
 	df_target: int,
@@ -275,7 +276,7 @@ def build_params(
 		| ((1 if motor_enable else 0) << 3)
 		| ((1 if buzzer_enable else 0) << 4)
 		| ((1 if cpm_enable else 0) << 5)
-		| ((1 if is_left else 0) << 6)
+		# Bit6 (side) intentionally not set; side is controlled by commands 48/49
 	)
 	cpm_df = (df_dt & 0xF) | ((df_wait & 0xF) << 4)
 	cpm_pf = (pf_dt & 0xF) | ((pf_wait & 0xF) << 4)
@@ -298,7 +299,7 @@ def build_params(
 # Example:
 # pkt = build_params(
 #     gait_mode=0, early_swing=False, motor_enable=False, buzzer_enable=False,
-#     cpm_enable=True, is_left=True,
+#     cpm_enable=True,
 #     df_dt=3, df_wait=2, pf_dt=3, pf_wait=2,
 #     df_target=170, pf_target=60,
 #     cpm_range_df=50, cpm_range_pf=50,
@@ -313,12 +314,12 @@ def build_params(
 
 ### Build and send a parameter packet
 
-Note: Side selection is performed using commands 48 (RIGHT) and 49 (LEFT). The firmware ignores any “side” bit in RX flags.
+Note: Side selection is performed using commands 48 (RIGHT) and 49 (LEFT). The firmware ignores any “side” bit in RX flags; do not set bit6 expecting it to take effect.
 
 ```csharp
 byte[] BuildParams(
 	int gaitMode, bool earlySwing, bool motorEnable, bool buzzerEnable,
-	bool cpmEnable, bool isLeft,
+	bool cpmEnable,
 	int dfDt, int dfWait, int pfDt, int pfWait,
 	int dfTarget, int pfTarget,
 	int cpmRangeDf, int cpmRangePf,
@@ -331,8 +332,7 @@ byte[] BuildParams(
 		| ((earlySwing ? 1 : 0) << 2)
 		| ((motorEnable ? 1 : 0) << 3)
 		| ((buzzerEnable ? 1 : 0) << 4)
-		| ((cpmEnable ? 1 : 0) << 5)
-		| ((isLeft ? 1 : 0) << 6));
+		| ((cpmEnable ? 1 : 0) << 5)); // bit6 (side) intentionally not used
 	byte cpmDf = (byte)((dfDt & 0xF) | ((dfWait & 0xF) << 4));
 	byte cpmPf = (byte)((pfDt & 0xF) | ((pfWait & 0xF) << 4));
 	byte cmdByte = (byte)(cmd.HasValue ? ((cmd.Value & 0x7F) << 1) | 0x01 : 0x00);

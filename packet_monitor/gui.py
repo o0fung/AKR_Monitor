@@ -49,6 +49,7 @@ import os
 import csv
 import queue
 from typing import Optional, Dict, List, Tuple
+import errno
 
 try:
     # Prefer same-folder import when running as a script
@@ -113,7 +114,14 @@ class SerialWorker(QObject):
             self._ser = serial.Serial(self._port, self._baud, timeout=0.2)
             self.status.emit(f"Connected to {self._ser.port} @ {self._ser.baudrate} bps")
         except Exception as e:
-            self.connection_lost.emit(f"Open port failed: {e}")
+            # Enrich PermissionError with helpful diagnostics
+            msg = f"Open port failed: {e}"
+            try:
+                if self._is_permission_error(e):
+                    msg += "\n" + self._permission_help(self._port)
+            except Exception:
+                pass
+            self.connection_lost.emit(msg)
             self.stopped.emit()
             return
 
@@ -221,6 +229,79 @@ class SerialWorker(QObject):
             self._outbox.put((out_main, packet))
         except Exception as e:
             self.connection_lost.emit(f"Send build failed: {e}")
+
+    # ---------- Helpers for better error messages ----------
+    def _is_permission_error(self, e: Exception) -> bool:
+        """Best-effort detection of permission errors from pyserial/OSError wrappers."""
+        try:
+            if isinstance(e, PermissionError):
+                return True
+        except Exception:
+            pass
+        # pyserial often wraps OSError(13, 'Permission denied') in SerialException
+        try:
+            err_no = getattr(e, 'errno', None)
+            if err_no == errno.EACCES:
+                return True
+        except Exception:
+            pass
+        s = str(e).lower()
+        return ('permission denied' in s) or ('errno 13' in s)
+
+    def _permission_help(self, dev_path: str) -> str:
+        """Generate a short, actionable help text for serial device permission issues."""
+        lines: List[str] = []
+        lines.append("Tip: Permission denied opening serial port.")
+        import os as _os
+        try:
+            import pwd as _pwd, grp as _grp, stat as _stat, getpass as _getpass
+        except Exception:
+            _pwd = _grp = _stat = _getpass = None  # type: ignore
+
+        owner = group = perms_oct = "?"
+        user_in_group = False
+        user_name = None
+        try:
+            st = _os.stat(dev_path)
+            if _pwd and _grp and _stat:
+                owner = _pwd.getpwuid(st.st_uid).pw_name
+                group = _grp.getgrgid(st.st_gid).gr_name
+                perms_oct = oct(_stat.S_IMODE(st.st_mode))
+                user_name = _getpass.getuser() if _getpass else None
+                # Determine user's groups
+                try:
+                    user_groups = {_grp.getgrgid(gid).gr_name for gid in _os.getgroups()}
+                except Exception:
+                    user_groups = set()
+                user_in_group = group in user_groups
+        except Exception:
+            pass
+
+        lines.append(f"Permissions: {dev_path} -> {owner}:{group} {perms_oct}.")
+        if not user_in_group and group not in (None, "?"):
+            who = user_name or "<your-user>"
+            lines.append("Your user likely lacks access to this device.")
+            lines.append("Fix permanently (recommended): add your user to the owning group and re-login.")
+            lines.append(f"  sudo usermod -aG {group} {who}")
+            lines.append("  # Important: fully log out of your desktop session (or reboot) so new groups apply.")
+            lines.append("  # 'newgrp' only affects that one shell; GUI apps launched elsewhere won't inherit it.")
+        else:
+            lines.append("You appear to be in the correct group; ensure the GUI/app was started after re-login.")
+
+        # Provide robust, persistent device rule so permissions survive rebind/reboot
+        lines.append("")
+        lines.append("Optional: create a persistent udev rule to grant access to rfcomm TTYs:")
+        lines.append("  /etc/udev/rules.d/99-rfcomm-permissions.rules:")
+        lines.append("    SUBSYSTEM==\"tty\", KERNEL==\"rfcomm[0-9]*\", GROUP=\"dialout\", MODE=\"0660\", TAG+=\"uaccess\"")
+        lines.append("  sudo udevadm control --reload-rules && sudo udevadm trigger -s tty")
+
+        # Temporary one-off workarounds
+        lines.append("")
+        lines.append("Temporary (until unplug/rebind or reboot):")
+        lines.append(f"  sudo setfacl -m u:{user_name or '<your-user>'}:rw {dev_path}")
+        lines.append("  # or adjust mode (less secure): sudo chmod 666 /dev/rfcommX")
+
+        return "\n".join(lines)
 
 
 # ---------------- Main window -----------------
@@ -594,10 +675,11 @@ class MonitorWindow(QMainWindow):
         btn_move_df = mk_cmd_btn("Move to DF", 8)
         btn_move_pf = mk_cmd_btn("Move to PF", 16)
         btn_sysinfo = mk_cmd_btn("Show System Info", 32)
-        btn_factory = mk_cmd_btn("Factory Reset", 64)
+        btn_cal_rf = mk_cmd_btn("Calibrate RF", 3)
         # Row 2 (side set)
         btn_set_right = mk_cmd_btn("Set Side RIGHT", 48)
         btn_set_left = mk_cmd_btn("Set Side LEFT", 49)
+        btn_factory = mk_cmd_btn("Factory Reset", 64)
         # Layout as grid
         cmd_layout.addWidget(btn_rf_reset, 0, 0)
         cmd_layout.addWidget(btn_rf_pair, 0, 1)
@@ -606,9 +688,10 @@ class MonitorWindow(QMainWindow):
         cmd_layout.addWidget(btn_move_df, 1, 0)
         cmd_layout.addWidget(btn_move_pf, 1, 1)
         cmd_layout.addWidget(btn_sysinfo, 1, 2)
-        cmd_layout.addWidget(btn_factory, 1, 3)
+        cmd_layout.addWidget(btn_cal_rf, 1, 3)
         cmd_layout.addWidget(btn_set_right, 2, 0)
         cmd_layout.addWidget(btn_set_left, 2, 1)
+        cmd_layout.addWidget(btn_factory, 2, 2)
 
         form.addRow("Walk Mode (0-3)", self.in_walk_mode)
         form.addRow("Early Swing", self.in_early_swing)
@@ -724,7 +807,7 @@ class MonitorWindow(QMainWindow):
 
         self.tabs.currentChanged.connect(on_tab_changed)
 
-    # Status bar
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
@@ -826,7 +909,7 @@ class MonitorWindow(QMainWindow):
                 self.set_status(msg)
                 # Update System Info grid labels
                 try:
-                    self.set_label("sys_ver", f"v{int(ver) if ver is not None else 0}")
+                    self.set_label("sys_ver", f"v{float(ver) if ver is not None else 0.0:1.2f}")
                 except Exception:
                     self.set_label("sys_ver", "--")
                 try:
